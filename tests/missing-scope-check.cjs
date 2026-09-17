@@ -1,0 +1,21 @@
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE);
+(async()=>{
+ const browser=await chromium.launch({channel:'chrome',headless:true});
+ const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const base={project:'fixture',cwd:'D:/fixture',updated_at:1,issues:[],activity:{code:'idle'},size:0,reclaimable:0};
+ const rows=[{...base,id:'parent',title:'Healthy parent',kind:'main',file_count:1,missing_files:[]},{...base,id:'child',title:'Missing child',kind:'internal',file_count:0,missing_files:['child.jsonl']},{...base,id:'independent',title:'Missing internal',kind:'internal',file_count:0,missing_files:['internal.jsonl']},{...base,id:'main',title:'Missing main',kind:'main',file_count:0,missing_files:['main.jsonl']}];
+ await page.route('**/api/state',r=>r.fulfill({json:{csrf:'fixture',rows,spawn_edges:{parent:['child']},complete:true,generation:1,status:'',source:'',cli:{available:true,message:'',version:'',path:''},diagnostics:[],diagnostic_count:0,home:'D:/fixture'}}));
+ for(const endpoint of ['delete-progress','database-progress'])await page.route('**/api/'+endpoint,r=>r.fulfill({json:{running:false}}));
+ await page.goto('http://127.0.0.1:8766');await page.waitForFunction(()=>typeof state!=='undefined'&&state?.complete);
+ await page.locator('#fileStatus').selectOption('allMissing');
+ if(await page.locator('.session-row:not(.context-row)').count()!==3)throw Error('Missing scope');
+ if(await page.locator('.context-row').count()!==1)throw Error('Parent context');
+ if(!await page.locator('.context-row input').isDisabled())throw Error('Context selectable');
+ await page.locator('#selectAll').check();
+ const ids=await page.evaluate(()=>[...selected].sort());
+ if(JSON.stringify(ids)!==JSON.stringify(['child','independent','main']))throw Error('Selected healthy parent or missed internal');
+ await page.locator('#language').selectOption('en');
+ if(!(await page.locator('.toolbar').innerText()).includes('Sessions & attached records'))throw Error('Translation');
+ if(errors.length)throw Error(errors.join('\n'));
+ await browser.close();console.log('PASS: global missing filter includes internal children without selecting healthy parent');
+})().catch(e=>{console.error(e);process.exit(1)});

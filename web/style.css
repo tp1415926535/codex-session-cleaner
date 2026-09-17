@@ -158,3 +158,27 @@ header #settings{margin-left:0}
 html[lang=en] .workspace.with-project-nav{grid-template-columns:210px minmax(0,1fr) var(--preview-width,340px)}
 html[lang=en] .filters>select{max-width:195px}
 @media(max-width:800px){html[lang=en] .workspace.with-project-nav{grid-template-columns:minmax(0,1fr)}}
+#databaseDialog{width:min(850px,95vw);max-height:90dvh;padding:0;overflow:hidden}
+#databaseDialog[open]{display:flex;flex-direction:column}
+.db-header{padding:20px 24px 12px;flex:none;border-bottom:1px solid #e3e9ed}
+.db-header h2{margin:0}.db-header p{font-size:12px;margin-bottom:0}
+.db-scroll{min-height:0;overflow:auto;padding:12px 24px;overscroll-behavior:contain;margin-right:5px}
+.db-footer{padding:14px 24px;border-top:1px solid #e3e9ed;flex:none;background:#fafcfc}
+.db-footer .actions{margin:0;flex-wrap:wrap}
+#dbTable{overflow-x:auto}#dbTable td{vertical-align:middle;font-size:12px}#dbTable th{white-space:normal}
+#dbTable td:nth-child(2){width:auto}.db-description{display:block;margin-top:5px;color:#81909a;font-size:11px}
+.db-retention{display:flex;align-items:center;gap:12px;font-size:13px}.db-retention select{max-width:none;flex:1;margin:0}
+.db-scroll>p{font-size:12px}#dbPlan p{margin:6px 0}#dbProgressBar{width:100%;height:6px;accent-color:#397965}
+#dbProgressText{font-size:12px;margin:6px 0 12px}.db-result{padding:12px 0;border-top:1px solid #e3e9ed}.db-result p{font-size:12px;margin:5px 0}
+
+.module-actions{display:flex;align-items:center;margin-left:20px;gap:8px}.module-actions button{margin:0;color:#176859;background:#edf5f2;border-color:#d3e5dd}header #settings{margin-left:0}.status-link{padding:0;border:0;background:transparent;font-size:12px;color:#637580}.status-link:hover{background:transparent;color:#176859;text-decoration:underline}.primary{background:#236d5d;color:#fff;border-color:#236d5d}.primary:hover{background:#195647}.settings-note,.connection-details{font-size:12px}.connection-details summary{padding:8px 0}#cliDetail{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:700px){header{gap:8px;flex-wrap:wrap}.module-actions{margin-left:auto}header #language{margin-left:0}}
+
+.record-kind{display:block;color:#74838b;font-size:11px;margin-top:5px}.project-child .record-kind{padding-left:76px}
+
+.record-section td{background:#fafbfc;padding-top:10px;padding-bottom:10px;border-bottom:1px solid #e7edf0;color:#526975;font-size:12px}.record-section.in-project td:nth-child(2){padding-left:50px}.section-count{margin-left:10px;color:#8b99a2;font-weight:400}.categorized-record.project-child .session-title:before,.categorized-record.project-child .session-title:after{display:none}.record-section strong{font-weight:600}
+
+.hierarchy-row .session-title{padding-left:calc(12px + var(--record-depth,0)*24px)}.tree-title{display:flex;align-items:flex-start;gap:6px}.tree-toggle,.tree-spacer{width:18px;flex:0 0 18px}.tree-toggle{padding:2px 0;border:0;background:transparent;color:#637580}.tree-meta,.hierarchy-row .subtitle{display:block;margin-left:24px;font-size:11px;color:#81919b;margin-top:5px}.context-row{background:#f8fafb}.context-row .tree-meta{color:#956025}.toolbar .tabs strong{font-size:14px;font-weight:600}
+
+.attached-row td{padding-top:10px;padding-bottom:10px}.attached-row .title{font-size:13px;color:#526975}
+
+.attached-count{flex:none;color:#81919b;font-size:11px;white-space:nowrap;padding-top:3px;margin-left:6px}

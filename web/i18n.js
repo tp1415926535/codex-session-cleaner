@@ -2,7 +2,8 @@
 // Locale resources are independent JSON catalogs. Session content is never translated.
 const I18N=(()=>{
  const supported=['zh-CN','en'];
- let language='zh-CN',catalogs={},patterns=[],exact=new Map();
+ const preferredLanguage=navigator.languages?.[0]||navigator.language||'en';
+ let language=/^zh(?:-|$)/i.test(preferredLanguage)?'zh-CN':'en',catalogs={},patterns=[],exact=new Map();
  try{const saved=localStorage.getItem('cleaner.language');if(supported.includes(saved))language=saved;}catch{}
  const textBindings=new Map(),attributeBindings=new Map();
  let cleanupQueued=false;
@@ -11,7 +12,7 @@ const I18N=(()=>{
  function format(key,values={}){
   if(values.count!==undefined&&new Intl.PluralRules(language).select(Number(values.count))==='one'&&catalogs[language]?.[key+'_one'])key+='_one';
   const template=catalogs[language]?.[key]??catalogs['zh-CN']?.[key]??key;
-  return template.replace(/\{(\w+)\}/g,(match,name)=>Object.hasOwn(values,name)?String(values[name]):match);
+  return template.replace(/\{(\w+)\}/g,(match,name)=>Object.hasOwn(values,name)?(values[name]?.i18nKey?format(values[name].i18nKey,values[name].values):String(values[name])):match);
  }
  // Adapter for existing Chinese backend messages. Only complete catalog templates match;
  // identifiers, titles and paths captured inside a message are kept verbatim.

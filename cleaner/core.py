@@ -14,6 +14,7 @@ import uuid
 from collections import defaultdict
 from contextlib import contextmanager
 from .activity import thread_activity
+from .maintenance import DatabaseMaintenance
 
 Path = pathlib.Path
 HEADER_LIMIT = 256 * 1024
@@ -159,6 +160,8 @@ class Store:
         self.rows = {}
         self.diagnostics = []
         self.header_cache = {}
+        self.header_parents = {}
+        self.display_edges = defaultdict(set)
         self.status = '尚未扫描'
         self.error = ''
         self.complete = False
@@ -168,6 +171,7 @@ class Store:
         self.state_path = None
         self.edges = {}
         self.activity_checked_at = 0
+        self.databases = DatabaseMaintenance(self)
         self.delete_result = None
         self.delete_progress = {"running": False, "phase": "idle", "can_stop": True, "done": 0, "total": 0}
 
@@ -229,6 +233,7 @@ class Store:
             try:
                 data = json.loads(raw) if len(raw) <= HEADER_LIMIT else {}
                 meta = data.get('payload', {}) if data.get('type') == 'session_meta' else {}
+                self.header_parents[key] = uid(meta.get('parent_thread_id'))
                 self.header_cache[key] = (uid(meta.get('id')), 'session_meta.id' if uid(meta.get('id')) else '文件头缺失/过大/无有效 id')
             except (ValueError, TypeError):
                 self.header_cache[key] = (None, '文件头无法解析')
@@ -256,6 +261,7 @@ class Store:
         try:
             self.status = '读取会话元信息'
             rows = self.metadata()
+            self.display_edges = defaultdict(set, {p: set(c) for p, c in self.edges.items()})
             with self.lock:
                 self.rows = rows
                 self.diagnostics = []
@@ -304,6 +310,9 @@ class Store:
                         'shared': len(claims) > 1 or conflict or hardlink}
                 if not claims:
                     self.diagnostics.append({**item, 'reason': '无权威会话归属；不使用文件名 UUID 猜测', 'kind': 'orphan', 'thread_ids': [], 'owner': owner}); continue
+                parent = self.header_parents.get((str(p), st.st_size, st.st_mtime_ns))
+                if owner in rows and parent in rows and owner != parent and not item['shared']:
+                    self.display_edges[parent].add(owner)
                 for sid in claims:
                     row = rows[sid]
                     with self.lock:
@@ -324,6 +333,15 @@ class Store:
                         if text: row['title'] = text[:120]
                     except (OSError, sqlite3.Error, ValueError):
                         pass
+            for parent, children in self.display_edges.items():
+                for child in children:
+                    if child not in rows or parent not in rows: continue
+                    attached = rows[child]
+                    attached.setdefault('parents', [])
+                    if not any(p['id'] == parent for p in attached['parents']):
+                        attached['parents'].append({'id': parent, 'title': rows[parent]['title']})
+                    if attached.get('record_type') == '操作安全审批':
+                        attached['title'] = '操作安全审批 · ' + rows[parent]['title'][:140]
             self.complete = True
             self.status = f'扫描完成 · {len(paths)} 个文件'
         except Exception as e:
@@ -342,6 +360,7 @@ class Store:
         with self.lock:
             return {'rows': [{**{k: v for k, v in row.items() if k not in ('files', 'first_user_message')}, 'file_count': len(row['files'])} for row in self.rows.values()],
                     'spawn_edges': {parent: sorted(children) for parent, children in self.edges.items()},
+                    'display_edges': {parent: sorted(children) for parent, children in self.display_edges.items()},
                     'diagnostics': self.diagnostics[:1000], 'diagnostic_count': len(self.diagnostics),
                     'status': self.status, 'complete': self.complete, 'error': self.error,
                     'cli': self.cli, 'home': str(self.home), 'generation': self.generation,

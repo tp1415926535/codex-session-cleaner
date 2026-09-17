@@ -49,6 +49,8 @@ def make_server(store, port=8765):
                 return self.reply({'error': 'Origin 校验失败'}, 403)
             path = urlsplit(self.path)
             try:
+                if path.path == '/api/database-inspect': return self.reply(store.databases.inspect())
+                if path.path == '/api/database-progress': return self.reply(store.databases.progress)
                 if path.path == '/api/delete-progress':
                     return self.reply({**store.delete_progress, 'result': store.delete_result if not store.delete_progress['running'] else None})
                 if path.path == '/api/state':
@@ -56,7 +58,7 @@ def make_server(store, port=8765):
                 if path.path == '/api/preview':
                     q = parse_qs(path.query)
                     return self.reply(store.preview(q.get('id', [''])[0], int(q.get('offset', ['0'])[0]), int(q.get('file', ['0'])[0])))
-                assets = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'text/javascript'), '/i18n.js': ('i18n.js', 'text/javascript'), '/locales/zh-CN.json': ('locales/zh-CN.json', 'application/json'), '/locales/en.json': ('locales/en.json', 'application/json'), '/style.css': ('style.css', 'text/css')}
+                assets = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'text/javascript'), '/i18n.js': ('i18n.js', 'text/javascript'), '/database.js': ('database.js', 'text/javascript'), '/locales/zh-CN.json': ('locales/zh-CN.json', 'application/json'), '/locales/en.json': ('locales/en.json', 'application/json'), '/style.css': ('style.css', 'text/css')}
                 if path.path in assets:
                     file, mime = assets[path.path]
                     return self.reply((ROOT / 'web' / file).read_bytes(), mime=mime + '; charset=utf-8')
@@ -73,6 +75,11 @@ def make_server(store, port=8765):
                 if length < 0 or length > 32768: raise ValueError('请求过大')
                 if self.headers.get('Content-Type', '').split(';')[0] != 'application/json': raise ValueError('仅支持 JSON 请求')
                 data = json.loads(self.rfile.read(length))
+                if self.path == '/api/database-plan': return self.reply(store.databases.plan(data.get('names'), data.get('log_days')))
+                if self.path == '/api/database-start':
+                    if data.get('confirmed') is not True: raise ValueError('Confirmation required')
+                    return self.reply(store.databases.start(data.get('token', '')))
+                if self.path == '/api/database-stop': return self.reply(store.databases.cancel())
                 if self.path == '/api/scan':
                     store.start_scan(); return self.reply({'ok': True})
                 if self.path == '/api/cancel':

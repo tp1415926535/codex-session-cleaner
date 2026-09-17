@@ -1,7 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id);
-let activitySignature='', state, token='', selected=new Set(), internal=false, focusId='', previewOffset=0, previewFile=0, activePlan, previewSequence=0, deleting=false;
+let activitySignature='', state, token='', selected=new Set(), recordScope='all', focusId='', previewOffset=0, previewFile=0, activePlan, previewSequence=0, deleting=false;
 let grouped=false,diagnosticPage=0;
+let databaseBusy=false;
 const deletedIds=new Set();
 const diagnosticLabels={missing:'文件缺失',unreadable:'无法读取',unsafe:'路径越界',orphan:'归属不明'};
 const collapsedProjects=new Set();
@@ -26,7 +27,7 @@ function scopeSize(ids){
  return {size,count};
 }
 function rowSize(row){if(sizeState!==state)scopeSize([]);if(!sizeCache.has(row.id))sizeCache.set(row.id,scopeSize([row.id]));return sizeCache.get(row.id);}
-function filtered(){const q=$('search').value.toLocaleLowerCase();return (state?.rows||[]).filter(r=>(internal?r.kind!=='main':r.kind==='main')&&(!$('fileStatus').value||((r.missing_files||[]).length>0&&($('fileStatus').value!=='allMissing'||r.file_count===0)))&&(!$('project').value||projectKey(r)===$('project').value)&&[r.title,r.project,r.cwd,r.id].some(v=>(v||'').toLocaleLowerCase().includes(q))).sort((a,b)=>$('sort').value==='size'?rowSize(b).size-rowSize(a).size:(b.updated_at||0)-(a.updated_at||0));}
+function filtered(){const q=$('search').value.toLocaleLowerCase();return (state?.rows||[]).filter(r=>(!$('fileStatus').value||((r.missing_files||[]).length>0&&($('fileStatus').value!=='allMissing'||r.file_count===0)))&&(!$('project').value||projectKey(r)===$('project').value)&&[r.title,r.project,r.cwd,r.id].some(v=>(v||'').toLocaleLowerCase().includes(q))).sort((a,b)=>$('sort').value==='size'?rowSize(b).size-rowSize(a).size:(b.updated_at||0)-(a.updated_at||0));}
 function selectionTotals(){
  const byId=new Map((state?.rows||[]).map(r=>[r.id,r]));
  const edges=new Map(Object.entries(state?.spawn_edges||{}));
@@ -36,7 +37,7 @@ function selectionTotals(){
  return {own,related,count,relatedCount};
 }
 function sizeSummary(own,related,relatedCount,count){return relatedCount?msg('selection_with_children',{own:fmt(own),children:fmt(related),count:relatedCount,total:count,size:fmt(own+related)}):msg('selection_size',{count,size:fmt(own)});}
-function selection(){const totals=selectionTotals();uiText($('selection'),totals.count?sizeSummary(totals.own,totals.related,totals.relatedCount,totals.count):'未选择会话');$('plan').disabled=!totals.count||!state?.complete||deleting;const visible=filtered();$('selectAll').checked=visible.length>0&&visible.every(r=>selected.has(r.id));$('selectAll').indeterminate=visible.some(r=>selected.has(r.id))&&!$('selectAll').checked;}
+function selection(){const totals=selectionTotals();uiText($('selection'),totals.count?sizeSummary(totals.own,totals.related,totals.relatedCount,totals.count):'未选择会话');$('plan').disabled=!totals.count||!state?.complete||deleting||databaseBusy;const visible=filtered();$('selectAll').checked=visible.length>0&&visible.every(r=>selected.has(r.id));$('selectAll').indeterminate=visible.some(r=>selected.has(r.id))&&!$('selectAll').checked;}
 
 function problemCell(r){
   const cell=element('td',undefined,'problem-cell');const notes=new Map();
@@ -65,16 +66,21 @@ function problemCell(r){
   }
   return cell;
 }
+function selectAttached(id,checked){
+ const edges=state?.display_edges||state?.spawn_edges||{},known=new Set((state?.rows||[]).map(r=>r.id)),seen=new Set(),pending=[id];
+ while(pending.length){const current=pending.pop();if(seen.has(current))continue;seen.add(current);if(known.has(current))checked?selected.add(current):selected.delete(current);pending.push(...(edges[current]||[]));}
+}
 function sessionRow(r,child=false,last=false){
   const tr=element('tr',undefined,selected.has(r.id)?'session-row selected':'session-row');
   if(child)tr.classList.add('project-child');if(last)tr.classList.add('last-child');
   const check=element('input');check.type='checkbox';check.checked=selected.has(r.id);
   I18N.attribute(check,'aria-label',msg('select_session',{title:r.title}));
-  check.onchange=()=>{check.checked?selected.add(r.id):selected.delete(r.id);render();};
+  check.onchange=()=>{selectAttached(r.id,check.checked);render();};
   const td=element('td');if(!child)td.append(check);tr.append(td);
   const title=element('td');title.className='session-title';const b=content('button',r.title,'title');b.title=r.title;b.onclick=()=>loadPreview(r.id);
   if(child){const content=element('div',undefined,'child-content');content.append(check,b);title.append(content);}
   else title.append(b,content('small',r.project||r.cwd,'subtitle'));
+  if(recordScope==='all')tr.classList.add('categorized-record');
   title.title=r.cwd+'\n'+r.id;
   const total=rowSize(r),bytes=element('td',fmt(total.size),'bytes');
   if(total.count>1){bytes.append(element('small',msg('size_own_children',{size:fmt(r.size),count:total.count-1}),'size-breakdown'));I18N.attribute(bytes,'title',msg('size_tooltip',{total:fmt(total.size),own:fmt(r.size),children:fmt(total.size-r.size)}));}
@@ -148,12 +154,42 @@ function renderProjectNav(){
   if(!groups.length)list.append(element('p',msg('no_matching_projects'),'nav-empty'));
   setActiveProject(activeProject);
 }
+const expandedThreads=new Set();
+function appendRecordSections(body,rows,projectChild=false){
+ const byId=new Map((state?.rows||[]).map(r=>[r.id,r])),matches=new Set(rows.map(r=>r.id)),visible=new Set(matches),parents=new Map();
+ for(const [parent,children] of Object.entries(state?.display_edges||state?.spawn_edges||{}))for(const id of children){if(parent===id||!byId.has(parent)||!byId.has(id))continue;if(!parents.has(id))parents.set(id,new Set());parents.get(id).add(parent);}
+ const parentOf=id=>{const first=parents.get(id)?.size===1?[...parents.get(id)][0]:null;const seen=new Set([id]);let current=first;while(current){if(seen.has(current))return null;seen.add(current);current=parents.get(current)?.size===1?[...parents.get(current)][0]:null;}return first;};
+ for(const row of rows){let id=row.id;const seen=new Set([id]);while(parentOf(id)){id=parentOf(id);if(seen.has(id))break;seen.add(id);visible.add(id);}}
+ const children=new Map();for(const id of visible){const parent=parentOf(id);if(parent&&visible.has(parent)){if(!children.has(parent))children.set(parent,[]);children.get(parent).push(id);}}
+ const compare=(a,b)=>$('sort').value==='size'?rowSize(byId.get(b)).size-rowSize(byId.get(a)).size:(byId.get(b).updated_at||0)-(byId.get(a).updated_at||0);
+ const emitted=new Set(),filtering=!!($('search').value||$('fileStatus').value);
+ function emit(id,depth){if(emitted.has(id))return;emitted.add(id);const row=byId.get(id),items=(children.get(id)||[]).sort(compare),context=!matches.has(id),tr=sessionRow(row,false);tr.classList.add('hierarchy-row');tr.dataset.recordId=id;tr.style.setProperty('--record-depth',Math.min(depth,12));
+  const cell=tr.querySelector('.session-title'),title=cell.querySelector('.title'),line=element('div',undefined,'tree-title');title.before(line);line.append(title);
+  if(depth>0){
+   cell.querySelector('.subtitle')?.remove();tr.classList.add('attached-row');
+   if(row.record_type==='操作安全审批')uiText(title,msg('approval_child',{id:id.slice(-8)}));
+   else if(row.title_missing)uiText(title,msg('agent_child',{id:id.slice(-8)}));
+  }
+  if(items.length){const toggle=element('button',filtering||expandedThreads.has(id)?'▾':'▸','tree-toggle');toggle.setAttribute('aria-expanded',String(filtering||expandedThreads.has(id)));I18N.attribute(toggle,'aria-label',msg('toggle_attached'));toggle.onclick=()=>{expandedThreads.has(id)?expandedThreads.delete(id):expandedThreads.add(id);render();};line.prepend(toggle);line.append(element('small',msg('attached_count',{count:items.length}),'attached-count'));}else line.prepend(element('span',undefined,'tree-spacer'));
+  if(context){tr.classList.add('context-row');tr.querySelector('input').disabled=true;tr.querySelector('input').checked=false;cell.append(element('small',msg('parent_context'),'tree-meta'));}
+  else if(depth===0&&row.kind!=='main')cell.append(element('small',row.record_type||msg('section_other'),'tree-meta'));
+  body.append(tr);if(filtering||expandedThreads.has(id))for(const child of items)emit(child,depth+1);
+ }
+ const roots=[...visible].filter(id=>!visible.has(parentOf(id))).sort(compare);
+ for(const id of roots.filter(id=>byId.get(id).kind==='main'))emit(id,0);
+ const unlinked=roots.filter(id=>byId.get(id).kind!=='main');
+ if(unlinked.length){const tr=element('tr',undefined,'record-section');
+ const groupIds=new Set(),pending=[...unlinked],visited=new Set();while(pending.length){const id=pending.pop();if(visited.has(id))continue;visited.add(id);if(matches.has(id))groupIds.add(id);pending.push(...(children.get(id)||[]));}
+ const check=element('input');check.type='checkbox';check.className='unlinked-select';const chosen=[...groupIds].filter(id=>selected.has(id)).length;check.checked=groupIds.size>0&&chosen===groupIds.size;check.indeterminate=chosen>0&&chosen<groupIds.size;check.disabled=!groupIds.size;I18N.attribute(check,'aria-label',msg('select_unlinked'));check.onchange=()=>{for(const id of groupIds)check.checked?selected.add(id):selected.delete(id);render();};const selectCell=element('td');selectCell.append(check);tr.append(selectCell);const cell=element('td');cell.colSpan=4;cell.append(element('strong',msg('unlinked_records')),element('span',msg('unlinked_note'),'section-count'));tr.append(cell);body.append(tr);for(const id of unlinked)emit(id,0);}
+ // Malformed cycles must remain inspectable rather than disappearing.
+ for(const id of visible)if(!emitted.has(id)&&!parentOf(id))emit(id,0);
+}
 function render(){
   const wrapper=document.querySelector('.tablewrap');const scrollTop=wrapper.scrollTop;
   const rows=filtered();const body=$('rows');body.replaceChildren();groupHeaders=new Map();
   navGroups=grouped?projectGroups(rows):[];
   $('groupByProject').classList.toggle('active',grouped);$('groupByProject').setAttribute('aria-pressed',String(grouped));
-  if(!grouped){for(const r of rows)body.append(sessionRow(r));}
+  if(!grouped){appendRecordSections(body,rows);}
   else for(const g of navGroups){
     const tr=element('tr',undefined,'project-group');tr.dataset.projectKey=g.key;groupHeaders.set(g.key,tr);
     const check=element('input');check.type='checkbox';check.className='group-select';
@@ -171,15 +207,15 @@ function render(){
     const stats=element('span',msg('group_size',{count:g.rows.length,size:fmt(g.size)}),'group-stats');
     const paths=[...g.paths].join(' · ');toggle.title=paths||'未记录工作目录';
     const groupBar=element('div',undefined,'group-heading');groupBar.append(toggle,stats);heading.append(groupBar);tr.append(heading);body.append(tr);
-    if(!closed)g.rows.forEach((r,i)=>body.append(sessionRow(r,true,i===g.rows.length-1)));
+    if(!closed)appendRecordSections(body,g.rows,true);
   }
-  uiText($('countLabel'),msg(internal?'list_internal':'list_sessions'));uiText($('count'),rows.length.toLocaleString());
+  uiText($('countLabel'),msg('list_all_records'));uiText($('count'),rows.length.toLocaleString());
   $('empty').hidden=rows.length>0||!state?.complete||!!state?.error;updateLoading();selection();renderProjectNav();wrapper.scrollTop=scrollTop;syncProjectPosition();
 }
 function locateDiagnosticThread(row){
   $('diagnosticsDialog').close();
-  internal=row.kind!=='main';
-  $('mainTab').classList.toggle('active',!internal);$('internalTab').classList.toggle('active',internal);
+
+  $('fileStatus').value='';
   $('project').value='';$('search').value=row.id;$('navSearch').value='';
   collapsedProjects.delete(projectKey(row));render();
   document.querySelector('.tablewrap').scrollTop=0;
@@ -233,25 +269,23 @@ for(const id of ['search','project','sort','fileStatus'])$(id).addEventListener(
 $('navSearch').oninput=renderProjectNav;
 document.querySelector('.tablewrap').addEventListener('scroll',()=>{if(scrollFrame)return;scrollFrame=requestAnimationFrame(()=>{scrollFrame=0;syncProjectPosition();});},{passive:true});
 $('groupByProject').onclick=()=>{grouped=!grouped;try{localStorage.setItem('cleaner.groupByProject',String(grouped));}catch{}render();};
-$('mainTab').onclick=()=>{internal=false;$('mainTab').classList.add('active');$('internalTab').classList.remove('active');render();};
-$('internalTab').onclick=()=>{internal=true;$('internalTab').classList.add('active');$('mainTab').classList.remove('active');render();};
 $('selectAll').onchange=()=>{for(const r of filtered())$('selectAll').checked?selected.add(r.id):selected.delete(r.id);render();};
 $('more').onclick=()=>loadPreview(focusId,true);
-$('settings').onclick=()=>{$('settingsError').hidden=true;$('homeInput').value=state.home;$('cliInput').value=state.cli.path||'';uiText($('cliDetail'),`${state.cli.version}\n${state.cli.message}\n${state.source}`);$('settingsDialog').showModal();};
-$('rescan').onclick=async()=>{try{await api('/api/scan',{});$('settingsDialog').close();}catch(e){uiText($('settingsError'),e.message);$('settingsError').hidden=false;}};
-$('openDiagnostics').onclick=()=>{$('settingsDialog').close();diagnosticPage=0;$('diagnosticsDialog').showModal();renderDiagnostics();};
+$('settings').onclick=()=>{if(!state)return;$('settingsError').hidden=true;$('homeInput').value=state.home;$('cliInput').value=state.cli.path||'';uiText($('cliDetail'),`${state.cli.version}\n${state.cli.message}\n${state.source}`);$('settingsDialog').showModal();};
+$('rescan').onclick=async()=>{try{$('rescan').disabled=true;await api('/api/scan',{});$('diagnosticsDialog').close();}catch(e){error(e);}finally{$('rescan').disabled=false;}};
+$('openDiagnostics').onclick=()=>{diagnosticPage=0;$('diagnosticsDialog').showModal();renderDiagnostics();};
 $('closeDiagnostics').onclick=()=>$('diagnosticsDialog').close();
 $('diagnosticPrev').onclick=()=>{diagnosticPage--;renderDiagnostics();$('diagnosticRows').scrollTop=0;};
 $('diagnosticNext').onclick=()=>{diagnosticPage++;renderDiagnostics();$('diagnosticRows').scrollTop=0;};
 for(const id of ['diagnosticKind','diagnosticSearch'])$(id).addEventListener(id==='diagnosticKind'?'change':'input',()=>{diagnosticPage=0;renderDiagnostics();$('diagnosticRows').scrollTop=0;});
 $('closeSettings').onclick=()=>$('settingsDialog').close();
-$('saveSettings').onclick=async()=>{try{await api('/api/settings',{home:$('homeInput').value,cli:$('cliInput').value});selected.clear();$('settingsDialog').close();}catch(e){uiText($('settingsError'),e.message);$('settingsError').hidden=false;}};
+$('saveSettings').onclick=async()=>{$('saveSettings').disabled=true;try{await api('/api/settings',{home:$('homeInput').value,cli:$('cliInput').value});selected.clear();$('settingsDialog').close();}catch(e){uiText($('settingsError'),e.message);$('settingsError').hidden=false;}finally{$('saveSettings').disabled=false;}};
 $('plan').onclick=async()=>{try{activePlan=await api('/api/plan',{ids:[...selected]});$('planDialog').classList.remove('show-result');uiText(document.querySelector('.plan-header h2'),msg('permanent_deletion'));$('execute').hidden=false;$('retryPlan').hidden=true;$('planBody').replaceChildren();for(const e of activePlan.entries){const box=element('div',undefined,'planentry');box.append(content('b',e.title),element('span',e.included_descendant?'（随父会话删除的子会话）':''),element('p',msg('plan_file_count',{id:e.id,count:e.files.length,size:fmt(e.bytes)})));for(const note of e.warnings||[])box.append(element('p',note,'plan-note'));for(const reason of e.blockers)box.append(element('p',reason,'warning'));$('planBody').append(box);}for(const reason of activePlan.blockers)$('planBody').append(element('p',reason,'warning'));const ownEntries=activePlan.entries.filter(e=>selected.has(e.id)),relatedEntries=activePlan.entries.filter(e=>!selected.has(e.id));uiText($('planSummary'),sizeSummary(ownEntries.reduce((s,e)=>s+e.bytes,0),relatedEntries.reduce((s,e)=>s+e.bytes,0),relatedEntries.length,activePlan.entries.length));uiText($('execute'),msg('delete_count',{count:activePlan.entries.length}));$('execute').disabled=!activePlan.allowed;uiText($('result'),'');$('planDialog').showModal();}catch(e){error(e);}};
 $('closeProblems').onclick=()=>$('problemDialog').close();
 $('retryPlan').onclick=()=>{$('planDialog').close();$('plan').click();};
 $('closePlan').onclick=()=>{if(!deleting)$('planDialog').close();};
 $('planDialog').addEventListener('cancel',e=>{if(deleting)e.preventDefault();});
-window.addEventListener('beforeunload',e=>{if(deleting){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(deleting||databaseBusy){e.preventDefault();e.returnValue='';}});
 let progressTimer,localDelete=false,observedDelete=false,completionHandled=false,completedStarted=0,currentStarted=0;
 function finishDelete(result, failure=''){
  if(completionHandled)return;
